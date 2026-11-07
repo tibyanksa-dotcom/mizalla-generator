@@ -23,5 +23,8 @@ drop trigger if exists cms_last_owner on public.client_admins;
 create trigger cms_last_owner before update or delete on public.client_admins for each row execute function public.cms_preserve_last_owner();
 drop policy if exists documents_write on public.client_documents;create policy documents_write on public.client_documents for all to authenticated using(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and status='draft' and not is_public)) with check(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and status='draft' and not is_public));
 drop policy if exists section_write on public.site_sections;create policy section_write on public.site_sections for all to authenticated using(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and not published)) with check(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and not published));
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types) values('client-branding','client-branding',true,2097152,array['image/png','application/manifest+json']) on conflict(id) do nothing;
+drop policy if exists branding_read on storage.objects;create policy branding_read on storage.objects for select to anon,authenticated using(bucket_id='client-branding');
+drop policy if exists branding_owner on storage.objects;create policy branding_owner on storage.objects for all to authenticated using(bucket_id='client-branding' and public.client_role()='owner') with check(bucket_id='client-branding' and public.client_role()='owner');
 commit;
 `;
