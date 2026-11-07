@@ -1,0 +1,27 @@
+// Additive upgrade: preserves installed content, users, documents and legacy RPCs.
+export const CMS_SQL=`
+begin;
+update storage.buckets set allowed_mime_types=array['application/pdf','image/png','image/jpeg','image/webp','image/gif','image/avif','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.openxmlformats-officedocument.presentationml.presentation','text/plain','text/csv'] where id='client-private' and public=false;
+create or replace function public.cms_public_kind(k text) returns boolean language sql immutable set search_path='' as $$ select k=any(array['opportunity','program','project','initiative','news','story','partner','board','service','job','video','testimonial','faq','statistic','banner']) $$;
+revoke all on function public.cms_public_kind(text) from public;grant execute on function public.cms_public_kind(text) to authenticated;
+drop policy if exists records_read on public.client_records;
+create policy records_read on public.client_records for select to authenticated using(public.client_role()='owner' or (kind in('volunteer','application','attendance','hours','opportunity') and public.client_role()='volunteer_manager') or (public.cms_public_kind(kind) and public.client_role() in('editor','reviewer')) or (kind='opportunity' and public.client_role()='volunteer_manager'));
+drop policy if exists records_write on public.client_records;
+create policy records_write on public.client_records for all to authenticated using(public.client_role()='owner' or (kind in('volunteer','application','attendance','hours','opportunity') and public.client_role()='volunteer_manager' and state='draft') or (public.cms_public_kind(kind) and (public.client_role()='reviewer' or public.client_role()='editor' and state='draft'))) with check((public.client_role()='owner' or (kind in('volunteer','application','attendance','hours','opportunity') and public.client_role()='volunteer_manager') or (public.cms_public_kind(kind) and public.client_role() in('editor','reviewer'))) and (state<>'published' or (public.cms_public_kind(kind) and public.client_role() in('owner','reviewer'))));
+create or replace function public.cms_safe_media(v text) returns text language sql stable security definer set search_path='' as $$ select case when v like 'media://%' then case when exists(select 1 from public.client_documents d where d.id::text=substring(v from 9) and d.status='approved' and d.is_public) then v else '' end when v like 'storage://%' then case when exists(select 1 from public.client_documents d where d.path=substring(v from 11) and d.status='approved' and d.is_public) then v else '' end else coalesce(v,'') end $$;
+revoke all on function public.cms_safe_media(text) from public;
+create or replace function public.public_content_records() returns table(id uuid,kind text,payload jsonb) language sql stable security definer set search_path='' as $fn$
+ select r.id,r.kind,jsonb_build_object('title',r.payload->>'title','description',r.payload->>'description','image_url',public.cms_safe_media(r.payload->>'image_url'),'link',r.payload->>'link','section_id',r.payload->>'section_id','date',r.payload->>'date','category',r.payload->>'category','value',r.payload->>'value','position',r.payload->>'position','attachments',coalesce((select jsonb_agg(jsonb_build_object('id',d.id,'title',d.title,'path',d.path)) from public.client_documents d where d.status='approved' and d.is_public and (r.payload->'attachments') @> jsonb_build_array(d.id::text)),'[]'::jsonb))
+ from public.client_records r where r.state='published' and r.kind=any(array['opportunity','program','project','initiative','news','story','partner','board','service','job','video','testimonial','faq','statistic','banner']) order by r.created_at desc
+ $fn$;
+revoke all on function public.public_content_records() from public;grant execute on function public.public_content_records() to anon,authenticated;
+create or replace function public.cms_preserve_last_owner() returns trigger language plpgsql security definer set search_path='' as $fn$ begin
+ if old.active and old.role='owner' and (tg_op='DELETE' or not new.active or new.role<>'owner') and not exists(select 1 from public.client_admins a where a.active and a.role='owner' and a.email<>old.email) then raise exception 'لا يمكن إيقاف أو حذف آخر مدير نشط للجهة'; end if;
+ if tg_op='DELETE' then return old; end if; return new;
+end $fn$;
+drop trigger if exists cms_last_owner on public.client_admins;
+create trigger cms_last_owner before update or delete on public.client_admins for each row execute function public.cms_preserve_last_owner();
+drop policy if exists documents_write on public.client_documents;create policy documents_write on public.client_documents for all to authenticated using(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and status='draft' and not is_public)) with check(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and status='draft' and not is_public));
+drop policy if exists section_write on public.site_sections;create policy section_write on public.site_sections for all to authenticated using(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and not published)) with check(public.client_role() in('owner','reviewer') or (public.client_role()='editor' and not published));
+commit;
+`;
