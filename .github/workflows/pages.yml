@@ -1,0 +1,43 @@
+name: Publish standalone generator
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import verified standalone source once
+        if: ${{ hashFiles('site/index.html') == '' }}
+        env:
+          SOURCE_URL: https://appm9vck9nizienim1o.teable.app/generator-source.zip.b64
+          SOURCE_SHA: 95ab7e7d921a6a1bf1d4ff43914510a9cb59445c100ed2ec5f7789ea20d1a9ec
+        run: |
+          curl --fail --location --retry 3 --output /tmp/mizalla-source.b64 "$SOURCE_URL"
+          base64 --decode /tmp/mizalla-source.b64 > /tmp/mizalla-source.zip
+          printf '%s  %s\n' "$SOURCE_SHA" /tmp/mizalla-source.zip | sha256sum -c -
+          mkdir -p site
+          unzip -q /tmp/mizalla-source.zip -d site
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add site
+          git commit -m 'Import complete standalone generator source'
+          git push
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Publish static website
+        id: deployment
+        uses: actions/deploy-pages@v4
